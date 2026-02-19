@@ -32,6 +32,14 @@ type User struct {
 	Email      string    `json:"email"`
 }
 
+type Chirp struct {
+	Id         uuid.UUID `json:"id"`
+	Created_at time.Time `json:"created_at"`
+	Updated_at time.Time `json:"updated_at"`
+	Body       string    `json:"body"`
+	UserId     uuid.UUID `json:"user_id"`
+}
+
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cfg.fileserverHits.Add(1)
@@ -114,34 +122,6 @@ func cleanPost(body string) string {
 	return strings.Join(includedWords, " ")
 }
 
-func handlerValidate(w http.ResponseWriter, r *http.Request) {
-	type postdata struct {
-		Body string `json:"body"`
-	}
-
-	decoder := json.NewDecoder(r.Body)
-	post := postdata{}
-	err := decoder.Decode(&post)
-	if err != nil {
-		respondWithError(w, 500, "Something went wrong")
-		return
-	}
-
-	if len(post.Body) > 140 {
-		respondWithError(w, 400, "Chirp is too long")
-		return
-	}
-
-	type returnVals struct {
-		Cleaned_body string `json:"cleaned_body"`
-	}
-	res := returnVals{
-		Cleaned_body: cleanPost(post.Body),
-	}
-
-	respondWithJSON(w, 200, res)
-}
-
 func (cfg *apiConfig) handlerUsersCreate(w http.ResponseWriter, r *http.Request) {
 	type email struct {
 		Email string `json:"email"`
@@ -171,6 +151,49 @@ func (cfg *apiConfig) handlerUsersCreate(w http.ResponseWriter, r *http.Request)
 	respondWithJSON(w, 201, res)
 }
 
+func (cfg *apiConfig) handlerChirpsCreate(w http.ResponseWriter, r *http.Request) {
+	type postdata struct {
+		Body   string    `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	post := postdata{}
+	err := decoder.Decode(&post)
+	if err != nil {
+		respondWithError(w, 500, "Something went wrong")
+		return
+	}
+
+	if len(post.Body) > 140 {
+		respondWithError(w, 400, "Chirp is too long")
+		return
+	}
+
+	cleanedBody := cleanPost(post.Body)
+
+	params := database.CreateChirpParams{
+		Body:   cleanedBody,
+		UserID: post.UserID,
+	}
+
+	chirp, err := cfg.db.CreateChirp(r.Context(), params)
+
+	if err != nil {
+		log.Fatalf("Error creating chirp: %s", err)
+	}
+
+	res := Chirp{
+		Id:         chirp.ID,
+		Created_at: chirp.CreatedAt,
+		Updated_at: chirp.UpdatedAt,
+		Body:       chirp.Body,
+		UserId:     chirp.UserID,
+	}
+
+	respondWithJSON(w, 201, res)
+}
+
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
@@ -192,7 +215,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
 	mux.HandleFunc("GET /api/healthz", handlerHealthz)
-	mux.HandleFunc("POST /api/validate_chirp", handlerValidate)
+	mux.HandleFunc("POST /api/chirps", apiCfg.handlerChirpsCreate)
 	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
 	mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
 	mux.HandleFunc("POST /api/users", apiCfg.handlerUsersCreate)
