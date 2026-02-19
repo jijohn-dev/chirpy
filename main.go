@@ -194,6 +194,29 @@ func (cfg *apiConfig) handlerChirpsCreate(w http.ResponseWriter, r *http.Request
 	respondWithJSON(w, 201, res)
 }
 
+func (cfg *apiConfig) handlerChirpsGet(w http.ResponseWriter, r *http.Request) {
+	chirps, err := cfg.db.GetChirps(r.Context())
+
+	if err != nil {
+		respondWithError(w, 500, "Error fetching chirps")
+		log.Fatalf("Error fetching chirps: %s", err)
+	}
+
+	resChirps := []Chirp{}
+	for _, c := range chirps {
+		resC := Chirp{
+			Id:         c.ID,
+			Created_at: c.CreatedAt,
+			Updated_at: c.UpdatedAt,
+			Body:       c.Body,
+			UserId:     c.UserID,
+		}
+		resChirps = append(resChirps, resC)
+	}
+
+	respondWithJSON(w, 200, resChirps)
+}
+
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
@@ -216,6 +239,7 @@ func main() {
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
 	mux.HandleFunc("GET /api/healthz", handlerHealthz)
 	mux.HandleFunc("POST /api/chirps", apiCfg.handlerChirpsCreate)
+	mux.HandleFunc("GET /api/chirps", apiCfg.handlerChirpsGet)
 	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
 	mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
 	mux.HandleFunc("POST /api/users", apiCfg.handlerUsersCreate)
