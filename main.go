@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jijohn-dev/chirpy/internal/auth"
 	"github.com/jijohn-dev/chirpy/internal/database"
 
 	"github.com/joho/godotenv"
@@ -38,6 +40,32 @@ type Chirp struct {
 	Updated_at time.Time `json:"updated_at"`
 	Body       string    `json:"body"`
 	UserId     uuid.UUID `json:"user_id"`
+}
+
+type userParams struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+func bindChirp(c database.Chirp) Chirp {
+	chirp := Chirp{
+		Id:         c.ID,
+		Created_at: c.CreatedAt,
+		Updated_at: c.UpdatedAt,
+		Body:       c.Body,
+		UserId:     c.UserID,
+	}
+	return chirp
+}
+
+func bindUser(u database.User) User {
+	user := User{
+		Id:         u.ID,
+		Created_at: u.CreatedAt,
+		Updated_at: u.UpdatedAt,
+		Email:      u.Email,
+	}
+	return user
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -123,19 +151,22 @@ func cleanPost(body string) string {
 }
 
 func (cfg *apiConfig) handlerUsersCreate(w http.ResponseWriter, r *http.Request) {
-	type email struct {
-		Email string `json:"email"`
-	}
-
 	decoder := json.NewDecoder(r.Body)
-	params := email{}
+	params := userParams{}
 	err := decoder.Decode(&params)
 	if err != nil {
 		respondWithError(w, 500, "Something went wrong")
 		return
 	}
 
-	user, err := cfg.db.CreateUser(r.Context(), params.Email)
+	hashedPassword, err := auth.HashPassword(params.Password)
+
+	createParams := database.CreateUserParams{
+		Email:          params.Email,
+		HashedPassword: hashedPassword,
+	}
+
+	user, err := cfg.db.CreateUser(r.Context(), createParams)
 
 	if err != nil {
 		log.Fatalf("Error creating user: %s", err)
@@ -204,17 +235,59 @@ func (cfg *apiConfig) handlerChirpsGet(w http.ResponseWriter, r *http.Request) {
 
 	resChirps := []Chirp{}
 	for _, c := range chirps {
-		resC := Chirp{
-			Id:         c.ID,
-			Created_at: c.CreatedAt,
-			Updated_at: c.UpdatedAt,
-			Body:       c.Body,
-			UserId:     c.UserID,
-		}
+		resC := bindChirp(c)
 		resChirps = append(resChirps, resC)
 	}
 
 	respondWithJSON(w, 200, resChirps)
+}
+
+func (cfg *apiConfig) handlerChirpGet(w http.ResponseWriter, r *http.Request) {
+	chirpID, err := uuid.Parse(r.PathValue("chirpID"))
+
+	if err != nil {
+		respondWithError(w, 400, "Error fetching chirp")
+		log.Fatalf("Error parsing chirp ID (%s): %s", r.PathValue("chirpID"), err)
+	}
+
+	chirp, err := cfg.db.GetChirp(r.Context(), chirpID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondWithError(w, 404, "Chirp not found")
+			return
+		}
+		respondWithError(w, 500, "Error fetching chirp")
+		return
+	}
+
+	res := bindChirp(chirp)
+	respondWithJSON(w, 200, res)
+}
+
+func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
+	params := userParams{}
+	decoder := json.NewDecoder(r.Body)
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, 500, "Something went wrong")
+		return
+	}
+
+	user, err := cfg.db.GetUser(r.Context(), params.Email)
+	if err != nil {
+		respondWithError(w, 401, "Incorrect email or password")
+		return
+	}
+
+	match, err := auth.CheckPasswordHash(params.Password, user.HashedPassword)
+	if err != nil || !match {
+		respondWithError(w, 401, "Incorrect email or password")
+		return
+	}
+
+	res := bindUser(user)
+
+	respondWithJSON(w, 200, res)
 }
 
 func main() {
@@ -238,11 +311,17 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
 	mux.HandleFunc("GET /api/healthz", handlerHealthz)
+
+	mux.HandleFunc("POST /api/login", apiCfg.handlerLogin)
+
+	mux.HandleFunc("POST /api/users", apiCfg.handlerUsersCreate)
+
 	mux.HandleFunc("POST /api/chirps", apiCfg.handlerChirpsCreate)
 	mux.HandleFunc("GET /api/chirps", apiCfg.handlerChirpsGet)
+	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerChirpGet)
+
 	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
 	mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
-	mux.HandleFunc("POST /api/users", apiCfg.handlerUsersCreate)
 
 	server := http.Server{
 		Handler: mux,
