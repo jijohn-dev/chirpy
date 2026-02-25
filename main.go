@@ -25,6 +25,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             *database.Queries
 	platform       string
+	secret         string
 }
 
 type User struct {
@@ -32,6 +33,14 @@ type User struct {
 	Created_at time.Time `json:"created_at"`
 	Updated_at time.Time `json:"updated_at"`
 	Email      string    `json:"email"`
+}
+
+type UserWithToken struct {
+	Id         uuid.UUID `json:"id"`
+	Created_at time.Time `json:"created_at"`
+	Updated_at time.Time `json:"updated_at"`
+	Email      string    `json:"email"`
+	Token      string    `json:"token"`
 }
 
 type Chirp struct {
@@ -43,8 +52,9 @@ type Chirp struct {
 }
 
 type userParams struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Email            string `json:"email"`
+	Password         string `json:"password"`
+	ExpiresInSeconds int    `json:"expires_in_seconds"`
 }
 
 func bindChirp(c database.Chirp) Chirp {
@@ -64,6 +74,17 @@ func bindUser(u database.User) User {
 		Created_at: u.CreatedAt,
 		Updated_at: u.UpdatedAt,
 		Email:      u.Email,
+	}
+	return user
+}
+
+func bindUserWithToken(u database.User, t string) UserWithToken {
+	user := UserWithToken{
+		Id:         u.ID,
+		Created_at: u.CreatedAt,
+		Updated_at: u.UpdatedAt,
+		Email:      u.Email,
+		Token:      t,
 	}
 	return user
 }
@@ -183,14 +204,27 @@ func (cfg *apiConfig) handlerUsersCreate(w http.ResponseWriter, r *http.Request)
 }
 
 func (cfg *apiConfig) handlerChirpsCreate(w http.ResponseWriter, r *http.Request) {
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 500, "Failed to get token from header")
+		log.Printf("error getting bearer token: %s", err)
+		return
+	}
+
+	userID, err := auth.ValidateJWT(token, cfg.secret)
+	if err != nil {
+		respondWithError(w, 401, "Unauthorized")
+		log.Printf("failed to validate JWT: %s", err)
+		return
+	}
+
 	type postdata struct {
-		Body   string    `json:"body"`
-		UserID uuid.UUID `json:"user_id"`
+		Body string `json:"body"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
 	post := postdata{}
-	err := decoder.Decode(&post)
+	err = decoder.Decode(&post)
 	if err != nil {
 		respondWithError(w, 500, "Something went wrong")
 		return
@@ -205,7 +239,7 @@ func (cfg *apiConfig) handlerChirpsCreate(w http.ResponseWriter, r *http.Request
 
 	params := database.CreateChirpParams{
 		Body:   cleanedBody,
-		UserID: post.UserID,
+		UserID: userID,
 	}
 
 	chirp, err := cfg.db.CreateChirp(r.Context(), params)
@@ -285,7 +319,18 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res := bindUser(user)
+	expirationTime := time.Hour
+	if params.ExpiresInSeconds > 0 && params.ExpiresInSeconds < 3600 {
+		expirationTime = time.Duration(params.ExpiresInSeconds)
+	}
+
+	token, err := auth.MakeJWT(user.ID, cfg.secret, expirationTime)
+	if err != nil {
+		respondWithError(w, 500, "Failed to create access JWT")
+		return
+	}
+
+	res := bindUserWithToken(user, token)
 
 	respondWithJSON(w, 200, res)
 }
@@ -294,6 +339,7 @@ func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
 	platform := os.Getenv("PLATFORM")
+	secret := os.Getenv("SECRET")
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -306,6 +352,7 @@ func main() {
 		fileserverHits: atomic.Int32{},
 		db:             dbQueries,
 		platform:       platform,
+		secret:         secret,
 	}
 
 	mux := http.NewServeMux()
