@@ -8,9 +8,22 @@ import (
 	"net/http"
 
 	"github.com/google/uuid"
+	"github.com/jijohn-dev/chirpy/internal/auth"
 )
 
 func (cfg *apiConfig) handlerPolka(w http.ResponseWriter, r *http.Request) {
+	apiKey, err := auth.GetAPIKey(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "invalid API key")
+		log.Printf("error extracting API key: %s", err)
+		return
+	}
+
+	if apiKey != cfg.polka_key {
+		respondWithError(w, 401, "invalid API key")
+		return
+	}
+
 	type parameters struct {
 		Event string `json:"event"`
 		Data  struct {
@@ -20,7 +33,7 @@ func (cfg *apiConfig) handlerPolka(w http.ResponseWriter, r *http.Request) {
 
 	params := parameters{}
 	decoder := json.NewDecoder(r.Body)
-	err := decoder.Decode(&params)
+	err = decoder.Decode(&params)
 	if err != nil {
 		respondWithError(w, 500, "Something went wrong")
 		return
