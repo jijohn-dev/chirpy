@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"sort"
 
 	"github.com/google/uuid"
 	"github.com/jijohn-dev/chirpy/internal/auth"
@@ -68,21 +69,45 @@ func (cfg *apiConfig) handlerChirpsCreate(w http.ResponseWriter, r *http.Request
 	respondWithJSON(w, 201, res)
 }
 
-func (cfg *apiConfig) handlerChirpsGet(w http.ResponseWriter, r *http.Request) {
-	chirps, err := cfg.db.GetChirps(r.Context())
-
-	if err != nil {
-		respondWithError(w, 500, "Error fetching chirps")
-		log.Fatalf("Error fetching chirps: %s", err)
-	}
-
+func createChirpsResponse(chirps []database.Chirp, sortDirection string) []Chirp {
 	resChirps := []Chirp{}
 	for _, c := range chirps {
 		resC := bindChirp(c)
 		resChirps = append(resChirps, resC)
 	}
+	if sortDirection == "desc" {
+		sort.Slice(resChirps, func(i, j int) bool { return resChirps[i].Created_at.After(resChirps[j].Created_at) })
+	}
+	return resChirps
+}
 
-	respondWithJSON(w, 200, resChirps)
+func (cfg *apiConfig) handlerChirpsGet(w http.ResponseWriter, r *http.Request) {
+	authorID := r.URL.Query().Get("author_id")
+	sortDirection := r.URL.Query().Get("sort")
+
+	if authorID == "" {
+		chirps, err := cfg.db.GetChirps(r.Context())
+		if err != nil {
+			respondWithError(w, 500, "Error fetching chirps")
+			log.Fatalf("Error fetching chirps: %s", err)
+		}
+
+		resChirps := createChirpsResponse(chirps, sortDirection)
+
+		respondWithJSON(w, 200, resChirps)
+	} else {
+		userID, err := uuid.Parse(authorID)
+		chirps, err := cfg.db.GetChirpsByAuthor(r.Context(), userID)
+		if err != nil {
+			respondWithError(w, 500, "Error fetching chirps")
+			log.Fatalf("Error fetching chirps: %s", err)
+		}
+
+		resChirps := createChirpsResponse(chirps, sortDirection)
+
+		respondWithJSON(w, 200, resChirps)
+	}
+
 }
 
 func (cfg *apiConfig) handlerChirpGet(w http.ResponseWriter, r *http.Request) {
